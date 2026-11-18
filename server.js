@@ -4,6 +4,8 @@ const fs = require("fs");
 const path = require("path");
 const { spawn, exec } = require("child_process");
 
+const saveContact = require("./routes/contact");
+
 const PORT = 3000;
 const OLLAMA_HOST = "127.0.0.1";
 const OLLAMA_PORT = 11434;
@@ -23,6 +25,13 @@ const MIME_TYPES = {
   ".webp": "image/webp",
   ".ico": "image/x-icon"
 };
+
+function sendJSON(res, statusCode, data) {
+  res.writeHead(statusCode, {
+    "Content-Type": "application/json; charset=utf-8"
+  });
+  res.end(JSON.stringify(data));
+}
 
 // Check Ollama availability
 function checkOllama() {
@@ -53,13 +62,13 @@ async function startOllama() {
 
   console.log("Starting Ollama...");
 
-  const process = spawn("ollama", ["serve"], {
+  const child = spawn("ollama", ["serve"], {
     detached: true,
     stdio: "ignore",
     windowsHide: true
   });
 
-  process.unref();
+  child.unref();
 
   for (let i = 0; i < 40; i++) {
     await new Promise(resolve => setTimeout(resolve, 1000));
@@ -100,35 +109,98 @@ function proxyToOllama(req, res, apiPath) {
     console.error("Ollama proxy error:", error.message);
 
     if (!res.headersSent) {
-      res.writeHead(502, {
-        "Content-Type": "application/json"
+      sendJSON(res, 502, {
+        error: "Cannot connect to Ollama."
       });
+    } else {
+      res.end();
     }
-
-    res.end(JSON.stringify({
-      error: "Cannot connect to Ollama."
-    }));
   });
 
   req.pipe(proxy);
 }
 
+// Supabase contact API
+async function handleContact(req, res) {
+  let body = "";
+  let bodySize = 0;
+  let tooLarge = false;
+
+  req.on("data", chunk => {
+    bodySize += chunk.length;
+
+    if (bodySize > 1024 * 1024) {
+      tooLarge = true;
+      body = "";
+      return;
+    }
+
+    if (!tooLarge) {
+      body += chunk.toString("utf8");
+    }
+  });
+
+  req.on("end", async () => {
+    if (tooLarge) {
+      sendJSON(res, 413, {
+        success: false,
+        message: "Request is too large."
+      });
+      return;
+    }
+
+    let data;
+
+    try {
+      data = JSON.parse(body);
+    } catch {
+      sendJSON(res, 400, {
+        success: false,
+        message: "Invalid JSON request."
+      });
+      return;
+    }
+
+    try {
+      const result = await saveContact(data);
+      sendJSON(res, 201, result);
+    } catch (error) {
+      console.error("Contact API error:", error.message);
+
+     sendJSON(res, error.statusCode || 500, {
+        success: false,
+        message: error.message
+});
+    }
+  });
+}
+
 // Create portfolio server
 const server = http.createServer((req, res) => {
+  const pathname = new URL(
+    req.url,
+    "http://localhost"
+  ).pathname;
 
-  // Check installed models
-  if (req.method === "GET" && req.url === "/api/tags") {
+  // Supabase contact form
+  if (req.method === "POST" && pathname === "/api/contact") {
+    handleContact(req, res);
+    return;
+  }
+
+  // Check installed Ollama models
+  if (req.method === "GET" && pathname === "/api/tags") {
     proxyToOllama(req, res, "/api/tags");
     return;
   }
 
-  // Chat API
-  if (req.method === "POST" && req.url === "/api/chat") {
+  // Ollama AI chat
+  if (req.method === "POST" && pathname === "/api/chat") {
     proxyToOllama(req, res, "/api/chat");
     return;
   }
 
-  // Only allow GET for website files
+  // Only allow GET and HEAD for website files
   if (req.method !== "GET" && req.method !== "HEAD") {
     res.writeHead(405);
     res.end("Method not allowed");
@@ -138,9 +210,7 @@ const server = http.createServer((req, res) => {
   let requestedPath;
 
   try {
-    requestedPath = decodeURIComponent(
-      new URL(req.url, "http://localhost").pathname
-    );
+    requestedPath = decodeURIComponent(pathname);
   } catch {
     res.writeHead(400);
     res.end("Invalid URL");
@@ -151,15 +221,39 @@ const server = http.createServer((req, res) => {
     requestedPath = "/index.html";
   }
 
-  const filePath = path.resolve(
-    ROOT,
-    "." + requestedPath
-  );
+  const filePath = path.resolve(ROOT, "." + requestedPath);
+  const relativePath = path.relative(ROOT, filePath);
+  const firstSegment = relativePath.split(path.sep)[0];
 
   // Prevent access outside portfolio folder
   if (
-    filePath !== ROOT &&
-    !filePath.startsWith(ROOT + path.sep)
+    relativePath.startsWith("..") ||
+    path.isAbsolute(relativePath)
+  ) {
+    res.writeHead(403);
+    res.end("Forbidden");
+    return;
+  }
+
+  // Never expose backend files, environment files or dependencies
+  const protectedFiles = [
+    "server.js",
+    "package.json",
+    "package-lock.json"
+  ];
+
+  const protectedFolders = [
+    "config",
+    "routes",
+    "node_modules",
+    ".git",
+    ".vscode"
+  ];
+
+  if (
+    relativePath.split(path.sep).some(part => part.startsWith(".")) ||
+    protectedFiles.includes(relativePath) ||
+    protectedFolders.includes(firstSegment)
   ) {
     res.writeHead(403);
     res.end("Forbidden");
@@ -199,15 +293,18 @@ async function startApplication() {
       console.log("YASH PORTFOLIO IS READY");
       console.log(`Website: http://localhost:${PORT}`);
       console.log(`AI Model: ${MODEL}`);
+      console.log("Supabase contact API: Enabled");
       console.log("--------------------------------");
 
-      // Open portfolio automatically on Windows
+      // Automatically open portfolio on Windows
       if (process.platform === "win32") {
         exec(
           `start "" "http://localhost:${PORT}"`,
           error => {
             if (error) {
-              console.log("Open the website manually in your browser.");
+              console.log(
+                "Open the website manually in your browser."
+              );
             }
           }
         );
@@ -215,7 +312,10 @@ async function startApplication() {
     });
 
     server.on("error", error => {
-      console.error("Portfolio server error:", error.message);
+      console.error(
+        "Portfolio server error:",
+        error.message
+      );
     });
 
   } catch (error) {
