@@ -3,14 +3,12 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const { spawn, exec } = require("child_process");
-
 const saveContact = require("./routes/contact");
 
 const PORT = 3000;
 const OLLAMA_HOST = "127.0.0.1";
 const OLLAMA_PORT = 11434;
 const MODEL = "llama3.2";
-
 const ROOT = __dirname;
 
 const MIME_TYPES = {
@@ -32,7 +30,6 @@ function sendJSON(res, statusCode, data) {
   });
   res.end(JSON.stringify(data));
 }
-
 // Check Ollama availability
 function checkOllama() {
   return new Promise(resolve => {
@@ -62,12 +59,23 @@ async function startOllama() {
 
   console.log("Starting Ollama...");
 
-  const child = spawn("ollama", ["serve"], {
+  let child;
+
+  try {
+    child = spawn("ollama", ["serve"], {
     detached: true,
     stdio: "ignore",
     windowsHide: true
-  });
+    });
+  } catch (error) {
+    throw new Error(
+      "Could not start Ollama. Check that Ollama is installed and available in PATH."
+    );
+  }
 
+  child.on("error", error => {
+    console.error("Ollama process error:", error.message);
+  });
   child.unref();
 
   for (let i = 0; i < 40; i++) {
@@ -167,20 +175,25 @@ async function handleContact(req, res) {
     } catch (error) {
       console.error("Contact API error:", error.message);
 
-     sendJSON(res, error.statusCode || 500, {
+      sendJSON(res, error.statusCode || 500, {
         success: false,
         message: error.message
-});
+      });
     }
   });
 }
 
 // Create portfolio server
 const server = http.createServer((req, res) => {
-  const pathname = new URL(
-    req.url,
-    "http://localhost"
-  ).pathname;
+  let pathname;
+
+  try {
+    pathname = new URL(req.url, "http://localhost").pathname;
+  } catch {
+    res.writeHead(400);
+    res.end("Invalid URL");
+    return;
+  }
 
   // Supabase contact form
   if (req.method === "POST" && pathname === "/api/contact") {
@@ -200,7 +213,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // Only allow GET and HEAD for website files
   if (req.method !== "GET" && req.method !== "HEAD") {
     res.writeHead(405);
     res.end("Method not allowed");
@@ -237,12 +249,14 @@ const server = http.createServer((req, res) => {
 
   // Never expose backend files, environment files or dependencies
   const protectedFiles = [
+    "local-server.js",
     "server.js",
     "package.json",
     "package-lock.json"
   ];
 
   const protectedFolders = [
+    "api",
     "config",
     "routes",
     "node_modules",
@@ -293,7 +307,7 @@ async function startApplication() {
       console.log("YASH PORTFOLIO IS READY");
       console.log(`Website: http://localhost:${PORT}`);
       console.log(`AI Model: ${MODEL}`);
-      console.log("Supabase contact API: Enabled");
+      console.log("Supabase contact API: Configured if environment variables are set");
       console.log("--------------------------------");
 
       // Automatically open portfolio on Windows

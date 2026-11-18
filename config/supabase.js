@@ -10,19 +10,26 @@ const { createClient } = require("@supabase/supabase-js");
 
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_SECRET_KEY;
+let supabase;
 
-if (!supabaseUrl || !supabaseKey) {
-    throw new Error(
-        "Supabase configuration missing. Check your root .env file."
-    );
-}
-
-const supabase = createClient(supabaseUrl, supabaseKey, {
-    auth: {
-        persistSession: false,
-        autoRefreshToken: false,
-        detectSessionInUrl: false
+module.exports = function getSupabase() {
+    if (!supabaseUrl || !supabaseKey) {
+        const error = new Error(
+            "Supabase configuration missing. Set SUPABASE_URL and SUPABASE_SECRET_KEY."
+        );
+        error.statusCode = 503;
+        throw error;
     }
-});
 
-module.exports = supabase;
+    if (!supabase) {
+        supabase = createClient(supabaseUrl, supabaseKey, {
+            auth: {
+                persistSession: false,
+                autoRefreshToken: false,
+                detectSessionInUrl: false
+            }
+        });
+    }
+
+    return supabase;
+};

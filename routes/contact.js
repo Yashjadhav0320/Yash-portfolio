@@ -1,5 +1,5 @@
 
-const supabase = require("../config/supabase");
+const getSupabase = require("../config/supabase");
 
 async function saveContact(data) {
   const { name, email, subject, message } = data || {};
@@ -16,6 +16,8 @@ async function saveContact(data) {
     error.statusCode = 400;
     throw error;
   }
+
+  const supabase = getSupabase();
 
   const { data: savedData, error } = await supabase
     .from("contact_messages")
